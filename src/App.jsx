@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
+import { supabase } from "./supabaseClient";
 import {
   Search, Plus, Minus, Trash2, Store, Package, ShoppingCart,
   History, X, AlertTriangle, Pencil, Check, Loader2,
-  Users, UserPlus, LogOut, Download
+  Users, UserPlus, LogOut, Download, RefreshCw
 } from "lucide-react";
 
 const UMBRAL_STOCK_BAJO = 5;
@@ -25,8 +26,27 @@ function formUsuarioVacio() {
   return { nombre: "", usuario: "", clave: "", rol: "vendedor" };
 }
 
+function mapProductoDesdeDB(p) {
+  return {
+    id: p.id, codigo: p.codigo || "", nombre: p.nombre, categoria: p.categoria || "",
+    stock: Number(p.stock) || 0, precioIngreso: Number(p.precio_ingreso) || 0, precioVenta: Number(p.precio_venta) || 0,
+  };
+}
+
+function mapProductoHaciaDB(p) {
+  return {
+    id: p.id, codigo: p.codigo, nombre: p.nombre, categoria: p.categoria,
+    stock: p.stock, precio_ingreso: p.precioIngreso, precio_venta: p.precioVenta,
+  };
+}
+
+function mapVentaDesdeDB(v) {
+  return { id: v.id, fecha: v.fecha, vendedor: v.vendedor, total: Number(v.total) || 0, items: v.items || [] };
+}
+
 export default function MinimarketApp() {
   const [cargando, setCargando] = useState(true);
+  const [sincronizando, setSincronizando] = useState(false);
   const [error, setError] = useState("");
   const [productos, setProductos] = useState([]);
   const [ventas, setVentas] = useState([]);
@@ -34,7 +54,6 @@ export default function MinimarketApp() {
   const [sesion, setSesion] = useState(null);
   const [vista, setVista] = useState("facturar");
 
-  // login / configuración inicial
   const [loginUsuario, setLoginUsuario] = useState("");
   const [loginClave, setLoginClave] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -44,38 +63,55 @@ export default function MinimarketApp() {
   const [setupClave2, setSetupClave2] = useState("");
   const [setupError, setSetupError] = useState("");
 
-  // inventario
   const [busquedaInventario, setBusquedaInventario] = useState("");
   const [formAbierto, setFormAbierto] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
   const [form, setForm] = useState(formVacio());
 
-  // facturación
   const [busquedaVenta, setBusquedaVenta] = useState("");
   const [ticket, setTicket] = useState([]);
   const [mensaje, setMensaje] = useState(null);
   const [expandido, setExpandido] = useState(null);
 
-  // usuarios (panel admin)
   const [formUsuarioAbierto, setFormUsuarioAbierto] = useState(false);
   const [editandoUsuario, setEditandoUsuario] = useState(null);
   const [formUsuario, setFormUsuario] = useState(formUsuarioVacio());
 
   const isAdmin = sesion?.rol === "admin";
 
+  async function recargarProductos() {
+    const { data, error: e } = await supabase.from("productos").select("*").order("nombre");
+    if (e) { setError("No se pudo cargar el inventario. Revisa tu conexión."); return; }
+    setProductos((data || []).map(mapProductoDesdeDB));
+  }
+
+  async function recargarVentas() {
+    const { data, error: e } = await supabase.from("ventas").select("*").order("fecha", { ascending: false });
+    if (e) { setError("No se pudo cargar el historial de ventas."); return; }
+    setVentas((data || []).map(mapVentaDesdeDB));
+  }
+
+  async function recargarUsuarios() {
+    const { data, error: e } = await supabase.from("usuarios").select("*");
+    if (e) { setError("No se pudo cargar los usuarios."); return; }
+    setUsuarios(data || []);
+  }
+
+  async function recargarTodo(mostrarIndicador) {
+    if (mostrarIndicador) setSincronizando(true);
+    await Promise.all([recargarProductos(), recargarVentas(), recargarUsuarios()]);
+    if (mostrarIndicador) setSincronizando(false);
+  }
+
   useEffect(() => {
-    try {
-      const prod = localStorage.getItem("minimarket_productos");
-      const vts = localStorage.getItem("minimarket_ventas");
-      const usrs = localStorage.getItem("minimarket_usuarios");
-      setProductos(prod ? JSON.parse(prod) : []);
-      setVentas(vts ? JSON.parse(vts) : []);
-      setUsuarios(usrs ? JSON.parse(usrs) : []);
-    } catch (e) {
-      setError("No se pudo leer la información guardada.");
-    }
-    setCargando(false);
+    recargarTodo(false).finally(() => setCargando(false));
   }, []);
+
+  // Refresca al cambiar de pestaña, para traer cambios hechos desde otro dispositivo
+  useEffect(() => {
+    if (!cargando) recargarTodo(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vista]);
 
   useEffect(() => {
     if (!mensaje) return;
@@ -83,35 +119,8 @@ export default function MinimarketApp() {
     return () => clearTimeout(t);
   }, [mensaje]);
 
-  function guardarProductos(lista) {
-    setProductos(lista);
-    try {
-      localStorage.setItem("minimarket_productos", JSON.stringify(lista));
-    } catch (e) {
-      setError("No se pudo guardar el inventario.");
-    }
-  }
-
-  function guardarVentas(lista) {
-    setVentas(lista);
-    try {
-      localStorage.setItem("minimarket_ventas", JSON.stringify(lista));
-    } catch (e) {
-      setError("No se pudo guardar la venta.");
-    }
-  }
-
-  function guardarUsuarios(lista) {
-    setUsuarios(lista);
-    try {
-      localStorage.setItem("minimarket_usuarios", JSON.stringify(lista));
-    } catch (e) {
-      setError("No se pudo guardar los usuarios.");
-    }
-  }
-
   // ---- Autenticación ----
-  function crearPrimerAdmin(e) {
+  async function crearPrimerAdmin(e) {
     e.preventDefault();
     if (!setupNombre.trim() || !setupUsuario.trim() || setupClave.length < 4) {
       setSetupError("Completa todos los campos. La contraseña debe tener al menos 4 caracteres.");
@@ -122,20 +131,27 @@ export default function MinimarketApp() {
       return;
     }
     const admin = { usuario: setupUsuario.trim(), clave: setupClave, nombre: setupNombre.trim(), rol: "admin" };
-    guardarUsuarios([admin]);
+    const { error: err } = await supabase.from("usuarios").insert(admin);
+    if (err) {
+      setSetupError("No se pudo crear la cuenta. Revisa tu conexión a la base de datos.");
+      return;
+    }
+    setUsuarios([admin]);
     setSesion({ usuario: admin.usuario, nombre: admin.nombre, rol: "admin" });
   }
 
-  function iniciarSesion(e) {
+  async function iniciarSesion(e) {
     e.preventDefault();
-    const encontrado = usuarios.find(
-      (u) => u.usuario.toLowerCase() === loginUsuario.trim().toLowerCase() && u.clave === loginClave
-    );
-    if (!encontrado) {
+    const { data, error: err } = await supabase
+      .from("usuarios")
+      .select("*")
+      .ilike("usuario", loginUsuario.trim())
+      .maybeSingle();
+    if (err || !data || data.clave !== loginClave) {
       setLoginError("Usuario o contraseña incorrectos.");
       return;
     }
-    setSesion({ usuario: encontrado.usuario, nombre: encontrado.nombre, rol: encontrado.rol });
+    setSesion({ usuario: data.usuario, nombre: data.nombre, rol: data.rol });
     setLoginUsuario("");
     setLoginClave("");
     setLoginError("");
@@ -166,7 +182,7 @@ export default function MinimarketApp() {
     setFormUsuario(formUsuarioVacio());
   }
 
-  function guardarFormUsuario(e) {
+  async function guardarFormUsuario(e) {
     e.preventDefault();
     const nombre = formUsuario.nombre.trim();
     const usuarioNombre = formUsuario.usuario.trim();
@@ -188,14 +204,18 @@ export default function MinimarketApp() {
       return;
     }
     const nuevo = { usuario: usuarioNombre, clave, nombre, rol: formUsuario.rol };
-    const lista = editandoUsuario
-      ? usuarios.map((u) => (u.usuario === editandoUsuario ? nuevo : u))
-      : [...usuarios, nuevo];
-    guardarUsuarios(lista);
+    const { error: err } = await supabase.from("usuarios").upsert(nuevo);
+    if (err) {
+      setMensaje({ tipo: "error", texto: "No se pudo guardar el usuario." });
+      return;
+    }
+    setUsuarios((prev) =>
+      editandoUsuario ? prev.map((u) => (u.usuario === editandoUsuario ? nuevo : u)) : [...prev, nuevo]
+    );
     cerrarFormUsuario();
   }
 
-  function eliminarUsuario(usuario) {
+  async function eliminarUsuario(usuario) {
     if (usuario === sesion.usuario) {
       setMensaje({ tipo: "error", texto: "No puedes eliminar tu propia cuenta mientras estás conectado." });
       return;
@@ -207,7 +227,12 @@ export default function MinimarketApp() {
       return;
     }
     if (!confirm(`¿Eliminar el usuario "${usuario}"?`)) return;
-    guardarUsuarios(usuarios.filter((u) => u.usuario !== usuario));
+    const { error: err } = await supabase.from("usuarios").delete().eq("usuario", usuario);
+    if (err) {
+      setMensaje({ tipo: "error", texto: "No se pudo eliminar el usuario." });
+      return;
+    }
+    setUsuarios((prev) => prev.filter((u) => u.usuario !== usuario));
   }
 
   // ---- Inventario ----
@@ -219,12 +244,8 @@ export default function MinimarketApp() {
 
   function abrirEdicion(p) {
     setForm({
-      codigo: p.codigo,
-      nombre: p.nombre,
-      categoria: p.categoria || "",
-      stock: String(p.stock),
-      precioIngreso: String(p.precioIngreso),
-      precioVenta: String(p.precioVenta),
+      codigo: p.codigo, nombre: p.nombre, categoria: p.categoria || "",
+      stock: String(p.stock), precioIngreso: String(p.precioIngreso), precioVenta: String(p.precioVenta),
     });
     setEditandoId(p.id);
     setFormAbierto(true);
@@ -236,39 +257,55 @@ export default function MinimarketApp() {
     setForm(formVacio());
   }
 
-  function guardarForm(e) {
+  async function guardarForm(e) {
     e.preventDefault();
     if (!form.nombre.trim()) return;
     const producto = {
       id: editandoId || nuevoId(),
-      codigo: form.codigo.trim(),
-      nombre: form.nombre.trim(),
-      categoria: form.categoria.trim(),
-      stock: Number(form.stock) || 0,
-      precioIngreso: Number(form.precioIngreso) || 0,
-      precioVenta: Number(form.precioVenta) || 0,
+      codigo: form.codigo.trim(), nombre: form.nombre.trim(), categoria: form.categoria.trim(),
+      stock: Number(form.stock) || 0, precioIngreso: Number(form.precioIngreso) || 0, precioVenta: Number(form.precioVenta) || 0,
     };
-    const lista = editandoId
-      ? productos.map((p) => (p.id === editandoId ? producto : p))
-      : [...productos, producto];
-    guardarProductos(lista);
+    const { error: err } = await supabase.from("productos").upsert(mapProductoHaciaDB(producto));
+    if (err) {
+      setMensaje({ tipo: "error", texto: "No se pudo guardar el producto." });
+      return;
+    }
+    setProductos((prev) =>
+      editandoId ? prev.map((p) => (p.id === editandoId ? producto : p)) : [...prev, producto]
+    );
     cerrarForm();
   }
 
-  function eliminarProducto(id) {
+  async function eliminarProducto(id) {
     if (!confirm("¿Eliminar este producto del inventario?")) return;
-    guardarProductos(productos.filter((p) => p.id !== id));
+    const { error: err } = await supabase.from("productos").delete().eq("id", id);
+    if (err) {
+      setMensaje({ tipo: "error", texto: "No se pudo eliminar el producto." });
+      return;
+    }
+    setProductos((prev) => prev.filter((p) => p.id !== id));
   }
 
-  function ajustarStock(id, delta) {
-    guardarProductos(
-      productos.map((p) => (p.id === id ? { ...p, stock: Math.max(0, p.stock + delta) } : p))
-    );
+  async function ajustarStock(id, delta) {
+    const producto = productos.find((p) => p.id === id);
+    if (!producto) return;
+    const nuevoStock = Math.max(0, producto.stock + delta);
+    const { error: err } = await supabase.from("productos").update({ stock: nuevoStock }).eq("id", id);
+    if (err) {
+      setMensaje({ tipo: "error", texto: "No se pudo actualizar el stock." });
+      return;
+    }
+    setProductos((prev) => prev.map((p) => (p.id === id ? { ...p, stock: nuevoStock } : p)));
   }
 
-  function borrarInventario() {
+  async function borrarInventario() {
     if (!confirm("Esto borrará todos los productos del inventario. ¿Continuar?")) return;
-    guardarProductos([]);
+    const { error: err } = await supabase.from("productos").delete().not("id", "is", null);
+    if (err) {
+      setMensaje({ tipo: "error", texto: "No se pudo borrar el inventario." });
+      return;
+    }
+    setProductos([]);
   }
 
   const productosFiltrados = productos.filter((p) => {
@@ -307,15 +344,10 @@ export default function MinimarketApp() {
     }
     setTicket((prev) => {
       const existe = prev.find((it) => it.id === producto.id);
-      if (existe) {
-        return prev.map((it) => (it.id === producto.id ? { ...it, cantidad } : it));
-      }
+      if (existe) return prev.map((it) => (it.id === producto.id ? { ...it, cantidad } : it));
       return [
         ...prev,
-        {
-          id: producto.id, codigo: producto.codigo, nombre: producto.nombre,
-          precioVenta: producto.precioVenta, cantidad, stockDisponible: producto.stock,
-        },
+        { id: producto.id, codigo: producto.codigo, nombre: producto.nombre, precioVenta: producto.precioVenta, cantidad, stockDisponible: producto.stock },
       ];
     });
     setBusquedaVenta("");
@@ -344,66 +376,79 @@ export default function MinimarketApp() {
   const totalTicket = ticket.reduce((acc, it) => acc + it.precioVenta * it.cantidad, 0);
   const totalUnidades = ticket.reduce((acc, it) => acc + it.cantidad, 0);
 
-  function finalizarVenta() {
+  async function finalizarVenta() {
     if (ticket.length === 0) return;
-    const nuevaListaProductos = productos.map((p) => {
-      const item = ticket.find((it) => it.id === p.id);
-      return item ? { ...p, stock: p.stock - item.cantidad } : p;
-    });
-    guardarProductos(nuevaListaProductos);
     const venta = {
       id: nuevoId(),
       fecha: new Date().toISOString(),
       vendedor: sesion.nombre,
-      items: ticket.map((it) => ({ id: it.id, codigo: it.codigo, nombre: it.nombre, precioVenta: it.precioVenta, cantidad: it.cantidad })),
       total: totalTicket,
+      items: ticket.map((it) => ({ id: it.id, codigo: it.codigo, nombre: it.nombre, precioVenta: it.precioVenta, cantidad: it.cantidad })),
     };
-    guardarVentas([venta, ...ventas]);
+    const { error: eVenta } = await supabase.from("ventas").insert(venta);
+    if (eVenta) {
+      setMensaje({ tipo: "error", texto: "No se pudo registrar la venta. Intenta de nuevo." });
+      return;
+    }
+    await Promise.all(
+      ticket.map((it) => {
+        const p = productos.find((prod) => prod.id === it.id);
+        const nuevoStock = p ? Math.max(0, p.stock - it.cantidad) : 0;
+        return supabase.from("productos").update({ stock: nuevoStock }).eq("id", it.id);
+      })
+    );
+    setProductos((prev) =>
+      prev.map((p) => {
+        const item = ticket.find((it) => it.id === p.id);
+        return item ? { ...p, stock: Math.max(0, p.stock - item.cantidad) } : p;
+      })
+    );
+    setVentas((prev) => [venta, ...prev]);
     setTicket([]);
     setMensaje({ tipo: "exito", texto: `Venta registrada por ${formatoMoneda(totalTicket)}.` });
   }
 
-  function anularVenta(id) {
+  async function anularVenta(id) {
     const venta = ventas.find((v) => v.id === id);
     if (!venta) return;
     if (!confirm("¿Anular esta venta? El stock de los productos se devolverá al inventario.")) return;
-    const listaProductos = productos.map((p) => {
-      const item = venta.items.find((it) => it.id === p.id);
-      return item ? { ...p, stock: p.stock + item.cantidad } : p;
-    });
-    guardarProductos(listaProductos);
-    guardarVentas(ventas.filter((v) => v.id !== id));
+    await Promise.all(
+      venta.items.map((it) => {
+        const p = productos.find((prod) => prod.id === it.id);
+        if (!p) return Promise.resolve();
+        return supabase.from("productos").update({ stock: p.stock + it.cantidad }).eq("id", it.id);
+      })
+    );
+    const { error: err } = await supabase.from("ventas").delete().eq("id", id);
+    if (err) {
+      setMensaje({ tipo: "error", texto: "No se pudo anular la venta." });
+      return;
+    }
+    setProductos((prev) =>
+      prev.map((p) => {
+        const item = venta.items.find((it) => it.id === p.id);
+        return item ? { ...p, stock: p.stock + item.cantidad } : p;
+      })
+    );
+    setVentas((prev) => prev.filter((v) => v.id !== id));
     setMensaje({ tipo: "exito", texto: "Venta anulada y stock restaurado." });
   }
 
-  // ---- Exportar a Excel ----
   function exportarExcel() {
     const hojaProductos = productos.map((p) => {
       const margen = p.precioIngreso > 0 ? (((p.precioVenta - p.precioIngreso) / p.precioIngreso) * 100).toFixed(1) + "%" : "";
       return {
-        "Código": p.codigo,
-        "Producto": p.nombre,
-        "Categoría": p.categoria,
-        "Stock": p.stock,
-        "Precio de ingreso": p.precioIngreso,
-        "Precio de venta": p.precioVenta,
-        "Margen": margen,
+        "Código": p.codigo, "Producto": p.nombre, "Categoría": p.categoria, "Stock": p.stock,
+        "Precio de ingreso": p.precioIngreso, "Precio de venta": p.precioVenta, "Margen": margen,
       };
     });
-
     const hojaVentas = ventas.flatMap((v) =>
       v.items.map((it) => ({
-        "Fecha": new Date(v.fecha).toLocaleString("es-CO"),
-        "Vendedor": v.vendedor || "—",
-        "Código": it.codigo,
-        "Producto": it.nombre,
-        "Cantidad": it.cantidad,
-        "Precio unitario": it.precioVenta,
-        "Subtotal": it.precioVenta * it.cantidad,
-        "Total de la venta": v.total,
+        "Fecha": new Date(v.fecha).toLocaleString("es-CO"), "Vendedor": v.vendedor || "—",
+        "Código": it.codigo, "Producto": it.nombre, "Cantidad": it.cantidad,
+        "Precio unitario": it.precioVenta, "Subtotal": it.precioVenta * it.cantidad, "Total de la venta": v.total,
       }))
     );
-
     const libro = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(libro, XLSX.utils.json_to_sheet(hojaProductos), "Inventario");
     XLSX.utils.book_append_sheet(libro, XLSX.utils.json_to_sheet(hojaVentas), "Ventas");
@@ -425,6 +470,7 @@ export default function MinimarketApp() {
       font-weight: 500; cursor: pointer; border-radius: 4px 4px 0 0; }
     .mm-tab.active { background: var(--paper); color: var(--green-dark); font-weight: 600; }
     .mm-tab:hover:not(.active) { color: var(--paper); background: rgba(255,255,255,0.1); }
+    .mm-tab:disabled { opacity: 0.5; cursor: not-allowed; }
     .mm-toast { padding: 10px 20px; color: #fff; font-size: 13.5px; font-weight: 500; }
     .mm-main { max-width: 1150px; margin: 0 auto; padding: 20px; }
     .mm-search { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--line);
@@ -491,7 +537,7 @@ export default function MinimarketApp() {
         <style>{estilos}</style>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "14px" }}>
           <Loader2 className="animate-spin" size={18} />
-          Cargando...
+          Conectando con la base de datos...
         </div>
       </div>
     );
@@ -581,6 +627,9 @@ export default function MinimarketApp() {
             )}
           </nav>
           <div className="flex items-center gap-2">
+            <button className="mm-tab" onClick={() => recargarTodo(true)} disabled={sincronizando} title="Actualizar datos">
+              <RefreshCw size={16} className={sincronizando ? "animate-spin" : ""} />
+            </button>
             <div style={{ fontSize: "12.5px", color: "rgba(255,253,247,0.85)" }}>
               {sesion.nombre} <span style={{ opacity: 0.6 }}>· {isAdmin ? "Administrador" : "Vendedor"}</span>
             </div>
@@ -665,9 +714,7 @@ export default function MinimarketApp() {
             <div className="mm-table-wrap">
               <table className="mm-table">
                 <thead>
-                  <tr>
-                    <th>Código</th><th>Producto</th><th>Stock</th><th>P. ingreso</th><th>P. venta</th><th>Margen</th><th></th>
-                  </tr>
+                  <tr><th>Código</th><th>Producto</th><th>Stock</th><th>P. ingreso</th><th>P. venta</th><th>Margen</th><th></th></tr>
                 </thead>
                 <tbody>
                   {productosFiltrados.length === 0 && (
@@ -683,10 +730,7 @@ export default function MinimarketApp() {
                     return (
                       <tr key={p.id}>
                         <td style={{ color: "var(--muted)" }}>{p.codigo || "—"}</td>
-                        <td>
-                          {p.nombre}
-                          {p.categoria && <div style={{ fontSize: "12px", color: "var(--muted)" }}>{p.categoria}</div>}
-                        </td>
+                        <td>{p.nombre}{p.categoria && <div style={{ fontSize: "12px", color: "var(--muted)" }}>{p.categoria}</div>}</td>
                         <td>
                           <div className="flex items-center gap-1">
                             {isAdmin && <button className="mm-icon-btn" onClick={() => ajustarStock(p.id, -1)}><Minus size={12} /></button>}
@@ -727,8 +771,7 @@ export default function MinimarketApp() {
               <div className="mm-search" style={{ marginBottom: "12px" }}>
                 <Search size={16} />
                 <input
-                  type="text"
-                  autoFocus
+                  type="text" autoFocus
                   placeholder="Buscar producto por nombre o código..."
                   value={busquedaVenta}
                   onChange={(e) => setBusquedaVenta(e.target.value)}
@@ -743,9 +786,7 @@ export default function MinimarketApp() {
                     <button key={p.id} className="mm-resultado" onClick={() => agregarAlTicket(p)} disabled={p.stock <= 0}>
                       <div>
                         <div style={{ fontWeight: 600, fontSize: "15px" }}>{p.nombre}</div>
-                        <div style={{ fontSize: "12.5px", color: "var(--muted)" }}>
-                          {p.codigo && `Cód. ${p.codigo} · `}Stock: {p.stock}
-                        </div>
+                        <div style={{ fontSize: "12.5px", color: "var(--muted)" }}>{p.codigo && `Cód. ${p.codigo} · `}Stock: {p.stock}</div>
                       </div>
                       <div className="mm-display" style={{ fontSize: "1.25rem", color: p.stock <= 0 ? "#b8b19a" : "var(--green-dark)" }}>
                         {formatoMoneda(p.precioVenta)}
@@ -767,9 +808,7 @@ export default function MinimarketApp() {
                   {new Date().toLocaleString("es-CO")} · {sesion.nombre}
                 </div>
                 {ticket.length === 0 ? (
-                  <div style={{ textAlign: "center", color: "var(--muted)", fontSize: "14px", padding: "24px 0" }}>
-                    Aún no has agregado productos.
-                  </div>
+                  <div style={{ textAlign: "center", color: "var(--muted)", fontSize: "14px", padding: "24px 0" }}>Aún no has agregado productos.</div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
                     {ticket.map((it) => (
@@ -800,12 +839,7 @@ export default function MinimarketApp() {
                   <span className="mm-display" style={{ fontSize: "1.3rem" }}>TOTAL</span>
                   <span className="mm-display" style={{ fontSize: "2.4rem", color: "var(--green-dark)" }}>{formatoMoneda(totalTicket)}</span>
                 </div>
-                <button
-                  className="mm-btn-primary"
-                  style={{ width: "100%", justifyContent: "center", fontSize: "16px", padding: "14px 18px" }}
-                  onClick={finalizarVenta}
-                  disabled={ticket.length === 0}
-                >
+                <button className="mm-btn-primary" style={{ width: "100%", justifyContent: "center", fontSize: "16px", padding: "14px 18px" }} onClick={finalizarVenta} disabled={ticket.length === 0}>
                   <Check size={18} /> Cobrar venta
                 </button>
               </div>
@@ -824,9 +858,7 @@ export default function MinimarketApp() {
                   <div key={v.id} className="mm-panel" style={{ padding: "12px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
                       <div
-                        role="button"
-                        tabIndex={0}
-                        style={{ cursor: "pointer", flex: 1 }}
+                        role="button" tabIndex={0} style={{ cursor: "pointer", flex: 1 }}
                         onClick={() => setExpandido(expandido === v.id ? null : v.id)}
                         onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setExpandido(expandido === v.id ? null : v.id)}
                       >
@@ -836,11 +868,7 @@ export default function MinimarketApp() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <div
-                          className="mm-display"
-                          style={{ fontSize: "1.1rem", color: "var(--green-dark)", cursor: "pointer" }}
-                          onClick={() => setExpandido(expandido === v.id ? null : v.id)}
-                        >
+                        <div className="mm-display" style={{ fontSize: "1.1rem", color: "var(--green-dark)", cursor: "pointer" }} onClick={() => setExpandido(expandido === v.id ? null : v.id)}>
                           {formatoMoneda(v.total)}
                         </div>
                         {isAdmin && (
@@ -883,21 +911,10 @@ export default function MinimarketApp() {
                     <input value={formUsuario.nombre} onChange={(e) => setFormUsuario({ ...formUsuario, nombre: e.target.value })} required placeholder="Ej. Juan Pérez" />
                   </label>
                   <label>Usuario
-                    <input
-                      value={formUsuario.usuario}
-                      onChange={(e) => setFormUsuario({ ...formUsuario, usuario: e.target.value })}
-                      required
-                      disabled={!!editandoUsuario}
-                      placeholder="Ej. juan.ventas"
-                    />
+                    <input value={formUsuario.usuario} onChange={(e) => setFormUsuario({ ...formUsuario, usuario: e.target.value })} required disabled={!!editandoUsuario} placeholder="Ej. juan.ventas" />
                   </label>
                   <label>Contraseña
-                    <input
-                      type="password"
-                      value={formUsuario.clave}
-                      onChange={(e) => setFormUsuario({ ...formUsuario, clave: e.target.value })}
-                      placeholder={editandoUsuario ? "Dejar en blanco para no cambiarla" : "Mínimo 4 caracteres"}
-                    />
+                    <input type="password" value={formUsuario.clave} onChange={(e) => setFormUsuario({ ...formUsuario, clave: e.target.value })} placeholder={editandoUsuario ? "Dejar en blanco para no cambiarla" : "Mínimo 4 caracteres"} />
                   </label>
                   <label>Rol
                     <select value={formUsuario.rol} onChange={(e) => setFormUsuario({ ...formUsuario, rol: e.target.value })}>
@@ -919,9 +936,7 @@ export default function MinimarketApp() {
 
             <div className="mm-table-wrap">
               <table className="mm-table">
-                <thead>
-                  <tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th></th></tr>
-                </thead>
+                <thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th></th></tr></thead>
                 <tbody>
                   {usuarios.map((u) => (
                     <tr key={u.usuario}>
