@@ -40,6 +40,14 @@ Nota de seguridad: las contraseñas se guardan sin cifrado fuerte y las tablas q
 - Al cobrar, elige **Efectivo** (te pide cuánto paga el cliente y calcula el cambio) o **Transferencia**.
 - Cada venta queda con un número de ticket consecutivo (#1, #2, #3...).
 
+## Mesas
+
+Además de "Facturar" (venta rápida de mostrador), la pestaña "Mesas" permite abrir una cuenta por mesa: se le van agregando productos poco a poco (igual que en Facturar, con búsqueda/escaneo), queda guardada y visible para todos los dispositivos aunque cierres la pestaña, y se cobra cuando el cliente termina — con el mismo flujo de efectivo/transferencia y cambio. El administrador crea, renombra o elimina las mesas desde esa misma pestaña.
+
+### Si ya tenías el proyecto de Supabase de antes de esta versión
+
+Ejecuta también, una sola vez, el archivo `migracion-mesas.sql` en el SQL Editor.
+
 ## Historial
 
 Muestra, arriba de todo, el total de ventas de hoy, el dinero total vendido hoy y las unidades vendidas hoy. Cada venta se puede expandir para ver el detalle, imprimir, o (solo administrador) anular — anular devuelve el stock al inventario.

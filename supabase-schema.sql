@@ -29,6 +29,19 @@ create table if not exists usuarios (
   rol text not null default 'vendedor'
 );
 
+create table if not exists mesas (
+  id text primary key,
+  nombre text not null
+);
+
+create table if not exists pedidos_mesa (
+  id text primary key,
+  mesa_id text not null references mesas(id) on delete cascade,
+  items jsonb not null default '[]',
+  abierta_en timestamptz not null default now(),
+  vendedor text
+);
+
 -- Nota de seguridad: estas tablas quedan SIN Row Level Security (RLS),
 -- es decir, accesibles con la llave pública (anon key) sin restricciones.
 -- Es la forma más simple de conectar la app sin un backend propio,
@@ -57,4 +70,9 @@ alter table usuarios enable row level security;
 create policy "acceso total productos" on productos for all using (true) with check (true);
 create policy "acceso total ventas" on ventas for all using (true) with check (true);
 create policy "acceso total usuarios" on usuarios for all using (true) with check (true);
+
+alter table mesas enable row level security;
+alter table pedidos_mesa enable row level security;
+create policy "acceso total mesas" on mesas for all using (true) with check (true);
+create policy "acceso total pedidos_mesa" on pedidos_mesa for all using (true) with check (true);
 

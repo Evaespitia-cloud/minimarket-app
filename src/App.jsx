@@ -4,7 +4,7 @@ import { supabase } from "./supabaseClient";
 import {
   Search, Plus, Minus, Trash2, Store, Package, ShoppingCart,
   History, X, AlertTriangle, Pencil, Check, Loader2,
-  Users, UserPlus, LogOut, Download, RefreshCw, Printer, Banknote, Landmark
+  Users, UserPlus, LogOut, Download, RefreshCw, Printer, Banknote, Landmark, LayoutGrid
 } from "lucide-react";
 
 const UMBRAL_STOCK_BAJO = 5;
@@ -46,8 +46,13 @@ function mapVentaDesdeDB(v) {
     metodoPago: v.metodo_pago || "efectivo",
     montoRecibido: v.monto_recibido != null ? Number(v.monto_recibido) : null,
     cambio: v.cambio != null ? Number(v.cambio) : null,
+    mesa: v.mesa || null,
     items: v.items || [],
   };
+}
+
+function mapPedidoDesdeDB(p) {
+  return { id: p.id, mesaId: p.mesa_id, items: p.items || [], abiertaEn: p.abierta_en, vendedor: p.vendedor };
 }
 
 export default function MinimarketApp() {
@@ -82,6 +87,16 @@ export default function MinimarketApp() {
   const [metodoPago, setMetodoPago] = useState("efectivo");
   const [montoRecibido, setMontoRecibido] = useState("");
   const [ventaParaImprimir, setVentaParaImprimir] = useState(null);
+  const [origenCobro, setOrigenCobro] = useState(null); // null = facturar normal, o { mesaId, pedidoId, nombreMesa }
+  const [itemsCobro, setItemsCobro] = useState([]);
+
+  const [mesas, setMesas] = useState([]);
+  const [pedidos, setPedidos] = useState([]);
+  const [mesaSeleccionada, setMesaSeleccionada] = useState(null);
+  const [busquedaMesa, setBusquedaMesa] = useState("");
+  const [formMesaAbierto, setFormMesaAbierto] = useState(false);
+  const [editandoMesa, setEditandoMesa] = useState(null);
+  const [nombreMesaForm, setNombreMesaForm] = useState("");
 
   const [formUsuarioAbierto, setFormUsuarioAbierto] = useState(false);
   const [editandoUsuario, setEditandoUsuario] = useState(null);
@@ -107,9 +122,21 @@ export default function MinimarketApp() {
     setUsuarios(data || []);
   }
 
+  async function recargarMesas() {
+    const { data, error: e } = await supabase.from("mesas").select("*").order("nombre");
+    if (e) { setError("No se pudo cargar las mesas."); return; }
+    setMesas(data || []);
+  }
+
+  async function recargarPedidos() {
+    const { data, error: e } = await supabase.from("pedidos_mesa").select("*");
+    if (e) { setError("No se pudo cargar los pedidos de mesas."); return; }
+    setPedidos((data || []).map(mapPedidoDesdeDB));
+  }
+
   async function recargarTodo(mostrarIndicador) {
     if (mostrarIndicador) setSincronizando(true);
-    await Promise.all([recargarProductos(), recargarVentas(), recargarUsuarios()]);
+    await Promise.all([recargarProductos(), recargarVentas(), recargarUsuarios(), recargarMesas(), recargarPedidos()]);
     if (mostrarIndicador) setSincronizando(false);
   }
 
@@ -386,11 +413,14 @@ export default function MinimarketApp() {
   const totalTicket = ticket.reduce((acc, it) => acc + it.precioVenta * it.cantidad, 0);
   const totalUnidades = ticket.reduce((acc, it) => acc + it.cantidad, 0);
 
+  const totalCobro = itemsCobro.reduce((acc, it) => acc + it.precioVenta * it.cantidad, 0);
   const montoRecibidoNum = Number(montoRecibido) || 0;
-  const cambioCalculado = montoRecibidoNum - totalTicket;
+  const cambioCalculado = montoRecibidoNum - totalCobro;
 
-  function abrirPago() {
-    if (ticket.length === 0) return;
+  function abrirPago(items, origen) {
+    if (!items || items.length === 0) return;
+    setItemsCobro(items);
+    setOrigenCobro(origen || null);
     setMetodoPago("efectivo");
     setMontoRecibido("");
     setPagoAbierto(true);
@@ -399,10 +429,12 @@ export default function MinimarketApp() {
   function cancelarPago() {
     setPagoAbierto(false);
     setMontoRecibido("");
+    setOrigenCobro(null);
+    setItemsCobro([]);
   }
 
   async function confirmarVenta() {
-    if (metodoPago === "efectivo" && montoRecibidoNum < totalTicket) {
+    if (metodoPago === "efectivo" && montoRecibidoNum < totalCobro) {
       setMensaje({ tipo: "error", texto: "El monto recibido es menor al total." });
       return;
     }
@@ -410,11 +442,12 @@ export default function MinimarketApp() {
       id: nuevoId(),
       fecha: new Date().toISOString(),
       vendedor: sesion.nombre,
-      total: totalTicket,
+      total: totalCobro,
       metodo_pago: metodoPago,
       monto_recibido: metodoPago === "efectivo" ? montoRecibidoNum : null,
       cambio: metodoPago === "efectivo" ? cambioCalculado : null,
-      items: ticket.map((it) => ({ id: it.id, codigo: it.codigo, nombre: it.nombre, precioVenta: it.precioVenta, cantidad: it.cantidad })),
+      mesa: origenCobro?.nombreMesa || null,
+      items: itemsCobro.map((it) => ({ id: it.id, codigo: it.codigo, nombre: it.nombre, precioVenta: it.precioVenta, cantidad: it.cantidad })),
     };
     const { data, error: eVenta } = await supabase.from("ventas").insert(ventaNueva).select().single();
     if (eVenta) {
@@ -422,7 +455,7 @@ export default function MinimarketApp() {
       return;
     }
     await Promise.all(
-      ticket.map((it) => {
+      itemsCobro.map((it) => {
         const p = productos.find((prod) => prod.id === it.id);
         const nuevoStock = p ? Math.max(0, p.stock - it.cantidad) : 0;
         return supabase.from("productos").update({ stock: nuevoStock }).eq("id", it.id);
@@ -430,17 +463,162 @@ export default function MinimarketApp() {
     );
     setProductos((prev) =>
       prev.map((p) => {
-        const item = ticket.find((it) => it.id === p.id);
+        const item = itemsCobro.find((it) => it.id === p.id);
         return item ? { ...p, stock: Math.max(0, p.stock - item.cantidad) } : p;
       })
     );
     const ventaGuardada = mapVentaDesdeDB(data);
     setVentas((prev) => [ventaGuardada, ...prev]);
     setVentaParaImprimir(ventaGuardada);
-    setTicket([]);
+
+    if (origenCobro?.pedidoId) {
+      await supabase.from("pedidos_mesa").delete().eq("id", origenCobro.pedidoId);
+      setPedidos((prev) => prev.filter((p) => p.id !== origenCobro.pedidoId));
+      setMesaSeleccionada(null);
+      setBusquedaMesa("");
+    } else {
+      setTicket([]);
+    }
     setPagoAbierto(false);
     setMontoRecibido("");
-    setMensaje({ tipo: "exito", texto: `Venta #${ventaGuardada.numero} registrada por ${formatoMoneda(totalTicket)}.` });
+    setOrigenCobro(null);
+    setItemsCobro([]);
+    setMensaje({ tipo: "exito", texto: `Venta #${ventaGuardada.numero} registrada por ${formatoMoneda(totalCobro)}.` });
+  }
+
+  // ---- Mesas ----
+  const pedidoActual = pedidos.find((p) => p.mesaId === mesaSeleccionada) || null;
+  const itemsMesaActual = pedidoActual ? pedidoActual.items : [];
+  const totalMesaActual = itemsMesaActual.reduce((acc, it) => acc + it.precioVenta * it.cantidad, 0);
+
+  const resultadosMesa = busquedaMesa.trim()
+    ? productos.filter((p) => {
+        const q = busquedaMesa.trim().toLowerCase();
+        return p.nombre.toLowerCase().includes(q) || p.codigo.toLowerCase().includes(q);
+      })
+    : [];
+
+  async function guardarPedidoMesa(nuevosItems) {
+    if (nuevosItems.length === 0) {
+      if (pedidoActual) {
+        await supabase.from("pedidos_mesa").delete().eq("id", pedidoActual.id);
+        setPedidos((prev) => prev.filter((p) => p.id !== pedidoActual.id));
+      }
+      return;
+    }
+    if (pedidoActual) {
+      const { error: err } = await supabase.from("pedidos_mesa").update({ items: nuevosItems }).eq("id", pedidoActual.id);
+      if (err) { setMensaje({ tipo: "error", texto: "No se pudo actualizar la mesa." }); return; }
+      setPedidos((prev) => prev.map((p) => (p.id === pedidoActual.id ? { ...p, items: nuevosItems } : p)));
+    } else {
+      const nuevoPedido = { id: nuevoId(), mesa_id: mesaSeleccionada, items: nuevosItems, vendedor: sesion.nombre };
+      const { error: err } = await supabase.from("pedidos_mesa").insert(nuevoPedido);
+      if (err) { setMensaje({ tipo: "error", texto: "No se pudo abrir la mesa." }); return; }
+      setPedidos((prev) => [...prev, mapPedidoDesdeDB({ ...nuevoPedido, mesa_id: mesaSeleccionada })]);
+    }
+  }
+
+  function agregarAlPedido(producto) {
+    if (producto.stock <= 0) {
+      setMensaje({ tipo: "error", texto: `"${producto.nombre}" no tiene stock disponible.` });
+      return;
+    }
+    const yaEnPedido = itemsMesaActual.find((it) => it.id === producto.id);
+    const entrada = window.prompt(
+      `¿Cuántas unidades de "${producto.nombre}" agregas a la mesa?\nDisponible en stock: ${producto.stock}`,
+      yaEnPedido ? String(yaEnPedido.cantidad) : "1"
+    );
+    if (entrada === null) return;
+    const cantidad = parseInt(entrada, 10);
+    if (!Number.isFinite(cantidad) || cantidad <= 0) {
+      setMensaje({ tipo: "error", texto: "Cantidad inválida." });
+      return;
+    }
+    if (cantidad > producto.stock) {
+      setMensaje({ tipo: "error", texto: `Solo hay ${producto.stock} unidades disponibles de "${producto.nombre}".` });
+      return;
+    }
+    const existe = itemsMesaActual.find((it) => it.id === producto.id);
+    const nuevosItems = existe
+      ? itemsMesaActual.map((it) => (it.id === producto.id ? { ...it, cantidad } : it))
+      : [...itemsMesaActual, { id: producto.id, codigo: producto.codigo, nombre: producto.nombre, precioVenta: producto.precioVenta, cantidad, stockDisponible: producto.stock }];
+    guardarPedidoMesa(nuevosItems);
+    setBusquedaMesa("");
+  }
+
+  function cambiarCantidadPedido(id, delta) {
+    const nuevosItems = itemsMesaActual
+      .map((it) => {
+        if (it.id !== id) return it;
+        const nuevaCantidad = it.cantidad + delta;
+        if (nuevaCantidad > it.stockDisponible) {
+          setMensaje({ tipo: "error", texto: `Solo quedan ${it.stockDisponible} unidades de "${it.nombre}".` });
+          return it;
+        }
+        return { ...it, cantidad: nuevaCantidad };
+      })
+      .filter((it) => it.cantidad > 0);
+    guardarPedidoMesa(nuevosItems);
+  }
+
+  function quitarDelPedido(id) {
+    guardarPedidoMesa(itemsMesaActual.filter((it) => it.id !== id));
+  }
+
+  function abrirMesa(mesaId) {
+    setMesaSeleccionada(mesaId);
+    setBusquedaMesa("");
+  }
+
+  function cerrarMesa() {
+    setMesaSeleccionada(null);
+    setBusquedaMesa("");
+  }
+
+  function abrirNuevaMesa() {
+    setEditandoMesa(null);
+    setNombreMesaForm("");
+    setFormMesaAbierto(true);
+  }
+
+  function abrirEdicionMesa(m) {
+    setEditandoMesa(m.id);
+    setNombreMesaForm(m.nombre);
+    setFormMesaAbierto(true);
+  }
+
+  function cerrarFormMesa() {
+    setFormMesaAbierto(false);
+    setEditandoMesa(null);
+    setNombreMesaForm("");
+  }
+
+  async function guardarFormMesa(e) {
+    e.preventDefault();
+    const nombre = nombreMesaForm.trim();
+    if (!nombre) return;
+    if (editandoMesa) {
+      const { error: err } = await supabase.from("mesas").update({ nombre }).eq("id", editandoMesa);
+      if (err) { setMensaje({ tipo: "error", texto: "No se pudo renombrar la mesa." }); return; }
+      setMesas((prev) => prev.map((m) => (m.id === editandoMesa ? { ...m, nombre } : m)));
+    } else {
+      const nueva = { id: nuevoId(), nombre };
+      const { error: err } = await supabase.from("mesas").insert(nueva);
+      if (err) { setMensaje({ tipo: "error", texto: "No se pudo crear la mesa." }); return; }
+      setMesas((prev) => [...prev, nueva].sort((a, b) => a.nombre.localeCompare(b.nombre)));
+    }
+    cerrarFormMesa();
+  }
+
+  async function eliminarMesa(id) {
+    if (pedidos.find((p) => p.mesaId === id)) {
+      setMensaje({ tipo: "error", texto: "Esta mesa tiene un pedido abierto, cóbralo o vacíalo antes de eliminarla." });
+      return;
+    }
+    if (!confirm("¿Eliminar esta mesa?")) return;
+    const { error: err } = await supabase.from("mesas").delete().eq("id", id);
+    if (err) { setMensaje({ tipo: "error", texto: "No se pudo eliminar la mesa." }); return; }
+    setMesas((prev) => prev.filter((m) => m.id !== id));
   }
 
   function imprimirVenta(venta) {
@@ -485,6 +663,7 @@ export default function MinimarketApp() {
     const hojaVentas = ventas.flatMap((v) =>
       v.items.map((it) => ({
         "Venta #": v.numero, "Fecha": new Date(v.fecha).toLocaleString("es-CO"), "Vendedor": v.vendedor || "—",
+        "Mesa": v.mesa || "—",
         "Código": it.codigo, "Producto": it.nombre, "Cantidad": it.cantidad,
         "Precio unitario": it.precioVenta, "Subtotal": it.precioVenta * it.cantidad, "Total de la venta": v.total,
         "Método de pago": v.metodoPago === "efectivo" ? "Efectivo" : "Transferencia",
@@ -495,6 +674,56 @@ export default function MinimarketApp() {
     XLSX.utils.book_append_sheet(libro, XLSX.utils.json_to_sheet(hojaProductos), "Inventario");
     XLSX.utils.book_append_sheet(libro, XLSX.utils.json_to_sheet(hojaVentas), "Ventas");
     XLSX.writeFile(libro, `minimarket-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
+
+  function renderBloquePago() {
+    return (
+      <div>
+        <div className="mm-pago-metodo">
+          <button className={metodoPago === "efectivo" ? "active" : ""} onClick={() => setMetodoPago("efectivo")}>
+            <Banknote size={16} /> Efectivo
+          </button>
+          <button className={metodoPago === "transferencia" ? "active" : ""} onClick={() => setMetodoPago("transferencia")}>
+            <Landmark size={16} /> Transferencia
+          </button>
+        </div>
+
+        {metodoPago === "efectivo" && (
+          <div style={{ marginBottom: "6px" }}>
+            <label style={{ fontSize: "12.5px", color: "#6b6448", fontWeight: 500, display: "block", marginBottom: "4px" }}>
+              ¿Con cuánto paga?
+            </label>
+            <input
+              type="number" min="0" autoFocus
+              value={montoRecibido}
+              onChange={(e) => setMontoRecibido(e.target.value)}
+              placeholder="0"
+              style={{ width: "100%", border: "1px solid var(--line)", padding: "12px", fontSize: "18px", fontFamily: "'Oswald', sans-serif" }}
+            />
+            <div className="mm-cambio-box">
+              <span style={{ fontSize: "13px", color: "var(--muted)" }}>Cambio</span>
+              <span className="mm-display" style={{ fontSize: "1.4rem", color: cambioCalculado < 0 ? "var(--red)" : "var(--green-dark)" }}>
+                {formatoMoneda(Math.max(cambioCalculado, 0))}
+              </span>
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-2" style={{ marginTop: "12px" }}>
+          <button
+            className="mm-btn-primary"
+            style={{ flex: 1, justifyContent: "center", fontSize: "15px", padding: "12px" }}
+            onClick={confirmarVenta}
+            disabled={metodoPago === "efectivo" && montoRecibidoNum < totalCobro}
+          >
+            <Check size={16} /> Confirmar venta
+          </button>
+          <button className="mm-btn-secondary" onClick={cancelarPago}>
+            <X size={16} />
+          </button>
+        </div>
+      </div>
+    );
   }
 
   const estilos = `
@@ -550,6 +779,8 @@ export default function MinimarketApp() {
     .mm-resultado:disabled { cursor: not-allowed; opacity: 0.5; }
     .mm-facturar-grid { display: grid; grid-template-columns: 1fr 1.15fr; gap: 20px; align-items: start; }
     @media (max-width: 720px) { .mm-facturar-grid { grid-template-columns: 1fr; } }
+    .mm-mesas-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+    .mm-mesa-card { background: #fff; border: 2px solid var(--line); padding: 14px; }
     .mm-ticket { background: var(--paper); border: 1px solid var(--line); position: relative; }
     .mm-ticket-body { padding: 20px 20px 6px; }
     .mm-ticket-footer { padding: 0 20px 20px; }
@@ -673,6 +904,9 @@ export default function MinimarketApp() {
           <nav className="mm-tabs">
             <button className={`mm-tab ${vista === "facturar" ? "active" : ""}`} onClick={() => setVista("facturar")}>
               <ShoppingCart size={16} /> Facturar
+            </button>
+            <button className={`mm-tab ${vista === "mesas" ? "active" : ""}`} onClick={() => setVista("mesas")}>
+              <LayoutGrid size={16} /> Mesas
             </button>
             <button className={`mm-tab ${vista === "inventario" ? "active" : ""}`} onClick={() => setVista("inventario")}>
               <Package size={16} /> Inventario
@@ -915,57 +1149,13 @@ export default function MinimarketApp() {
                   <button
                     className="mm-btn-primary"
                     style={{ width: "100%", justifyContent: "center", fontSize: "16px", padding: "14px 18px" }}
-                    onClick={abrirPago}
+                    onClick={() => abrirPago(ticket, null)}
                     disabled={ticket.length === 0}
                   >
                     <Check size={18} /> Cobrar venta
                   </button>
                 ) : (
-                  <div>
-                    <div className="mm-pago-metodo">
-                      <button className={metodoPago === "efectivo" ? "active" : ""} onClick={() => setMetodoPago("efectivo")}>
-                        <Banknote size={16} /> Efectivo
-                      </button>
-                      <button className={metodoPago === "transferencia" ? "active" : ""} onClick={() => setMetodoPago("transferencia")}>
-                        <Landmark size={16} /> Transferencia
-                      </button>
-                    </div>
-
-                    {metodoPago === "efectivo" && (
-                      <div style={{ marginBottom: "6px" }}>
-                        <label style={{ fontSize: "12.5px", color: "#6b6448", fontWeight: 500, display: "block", marginBottom: "4px" }}>
-                          ¿Con cuánto paga?
-                        </label>
-                        <input
-                          type="number" min="0" autoFocus
-                          value={montoRecibido}
-                          onChange={(e) => setMontoRecibido(e.target.value)}
-                          placeholder="0"
-                          style={{ width: "100%", border: "1px solid var(--line)", padding: "12px", fontSize: "18px", fontFamily: "'Oswald', sans-serif" }}
-                        />
-                        <div className="mm-cambio-box">
-                          <span style={{ fontSize: "13px", color: "var(--muted)" }}>Cambio</span>
-                          <span className="mm-display" style={{ fontSize: "1.4rem", color: cambioCalculado < 0 ? "var(--red)" : "var(--green-dark)" }}>
-                            {formatoMoneda(Math.max(cambioCalculado, 0))}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="flex gap-2" style={{ marginTop: "12px" }}>
-                      <button
-                        className="mm-btn-primary"
-                        style={{ flex: 1, justifyContent: "center", fontSize: "15px", padding: "12px" }}
-                        onClick={confirmarVenta}
-                        disabled={metodoPago === "efectivo" && montoRecibidoNum < totalTicket}
-                      >
-                        <Check size={16} /> Confirmar venta
-                      </button>
-                      <button className="mm-btn-secondary" onClick={cancelarPago}>
-                        <X size={16} />
-                      </button>
-                    </div>
-                  </div>
+                  renderBloquePago()
                 )}
 
                 {!pagoAbierto && ventaParaImprimir && ticket.length === 0 && (
@@ -980,6 +1170,175 @@ export default function MinimarketApp() {
               </div>
               <div className="mm-zigzag" />
             </div>
+          </div>
+        )}
+
+        {vista === "mesas" && (
+          <div>
+            {mesaSeleccionada === null ? (
+              <div>
+                <div className="flex items-center justify-between gap-3" style={{ marginBottom: "14px", flexWrap: "wrap" }}>
+                  <div className="mm-display" style={{ fontSize: "1.1rem" }}>Mesas</div>
+                  {isAdmin && (
+                    <button className="mm-btn-primary" onClick={abrirNuevaMesa}>
+                      <Plus size={16} /> Nueva mesa
+                    </button>
+                  )}
+                </div>
+
+                {formMesaAbierto && (
+                  <form onSubmit={guardarFormMesa} className="mm-panel" style={{ marginBottom: "16px", maxWidth: "360px" }}>
+                    <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12.5px", color: "#6b6448", fontWeight: 500 }}>
+                      Nombre de la mesa
+                      <input
+                        value={nombreMesaForm}
+                        onChange={(e) => setNombreMesaForm(e.target.value)}
+                        required autoFocus
+                        placeholder="Ej. Mesa 1, Terraza, Barra"
+                        style={{ border: "1px solid var(--line)", padding: "8px 10px", fontSize: "14px", fontFamily: "'Inter', sans-serif", color: "var(--ink)" }}
+                      />
+                    </label>
+                    <div className="flex gap-2" style={{ marginTop: "12px" }}>
+                      <button type="submit" className="mm-btn-primary">
+                        <Check size={16} /> {editandoMesa ? "Guardar cambios" : "Crear mesa"}
+                      </button>
+                      <button type="button" className="mm-btn-secondary" onClick={cerrarFormMesa}>
+                        <X size={16} /> Cancelar
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {mesas.length === 0 ? (
+                  <div style={{ textAlign: "center", color: "var(--muted)", padding: "40px 0" }}>
+                    {isAdmin ? "Todavía no hay mesas. Crea la primera." : "Todavía no hay mesas creadas por el administrador."}
+                  </div>
+                ) : (
+                  <div className="mm-mesas-grid">
+                    {mesas.map((m) => {
+                      const pedido = pedidos.find((p) => p.mesaId === m.id);
+                      const total = pedido ? pedido.items.reduce((acc, it) => acc + it.precioVenta * it.cantidad, 0) : 0;
+                      const ocupada = !!pedido;
+                      return (
+                        <div key={m.id} className="mm-mesa-card" style={{ borderColor: ocupada ? "var(--red)" : "var(--line)" }}>
+                          <div
+                            role="button" tabIndex={0}
+                            onClick={() => abrirMesa(m.id)}
+                            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && abrirMesa(m.id)}
+                            style={{ cursor: "pointer" }}
+                          >
+                            <div style={{ fontWeight: 600, fontSize: "15px" }}>{m.nombre}</div>
+                            <div style={{ fontSize: "12px", color: ocupada ? "var(--red)" : "var(--green)", fontWeight: 600, marginTop: "4px" }}>
+                              {ocupada ? "Ocupada" : "Libre"}
+                            </div>
+                            {ocupada && (
+                              <div className="mm-display" style={{ fontSize: "1.1rem", marginTop: "6px" }}>{formatoMoneda(total)}</div>
+                            )}
+                          </div>
+                          {isAdmin && (
+                            <div className="flex gap-1" style={{ marginTop: "8px" }}>
+                              <button className="mm-icon-btn" onClick={() => abrirEdicionMesa(m)}><Pencil size={12} /></button>
+                              <button className="mm-icon-btn" onClick={() => eliminarMesa(m.id)}><Trash2 size={12} /></button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="mm-facturar-grid">
+                <div>
+                  <div className="flex items-center gap-2" style={{ marginBottom: "12px" }}>
+                    <button className="mm-btn-secondary" onClick={cerrarMesa}>← Volver a mesas</button>
+                    <div className="mm-display" style={{ fontSize: "1.05rem" }}>{mesas.find((m) => m.id === mesaSeleccionada)?.nombre}</div>
+                  </div>
+                  <div className="mm-search" style={{ marginBottom: "12px" }}>
+                    <Search size={16} />
+                    <input
+                      type="text" autoFocus
+                      placeholder="Buscar producto por nombre o código..."
+                      value={busquedaMesa}
+                      onChange={(e) => setBusquedaMesa(e.target.value)}
+                    />
+                  </div>
+                  {busquedaMesa.trim() ? (
+                    <div className="mm-panel" style={{ padding: "6px" }}>
+                      {resultadosMesa.length === 0 && (
+                        <div style={{ padding: "12px", color: "var(--muted)", fontSize: "14px" }}>Sin resultados para "{busquedaMesa}".</div>
+                      )}
+                      {resultadosMesa.map((p) => (
+                        <button key={p.id} className="mm-resultado" onClick={() => agregarAlPedido(p)} disabled={p.stock <= 0}>
+                          <div>
+                            <div style={{ fontWeight: 600, fontSize: "15px" }}>{p.nombre}</div>
+                            <div style={{ fontSize: "12.5px", color: "var(--muted)" }}>{p.codigo && `Cód. ${p.codigo} · `}Stock: {p.stock}</div>
+                          </div>
+                          <div className="mm-display" style={{ fontSize: "1.25rem", color: p.stock <= 0 ? "#b8b19a" : "var(--green-dark)" }}>
+                            {formatoMoneda(p.precioVenta)}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ padding: "40px 12px", textAlign: "center", color: "var(--muted)", fontSize: "14px" }}>
+                      Escribe el nombre o código de un producto para agregarlo a esta mesa.
+                    </div>
+                  )}
+                </div>
+
+                <div className="mm-ticket">
+                  <div className="mm-ticket-body">
+                    <div className="mm-display" style={{ fontSize: "1.2rem", textAlign: "center", marginBottom: "4px" }}>
+                      {mesas.find((m) => m.id === mesaSeleccionada)?.nombre}
+                    </div>
+                    <div style={{ textAlign: "center", fontSize: "12.5px", color: "var(--muted)", marginBottom: "16px" }}>Cuenta abierta</div>
+                    {itemsMesaActual.length === 0 ? (
+                      <div style={{ textAlign: "center", color: "var(--muted)", fontSize: "14px", padding: "24px 0" }}>Aún no has agregado productos.</div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                        {itemsMesaActual.map((it) => (
+                          <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", borderBottom: "1px dashed var(--line)", paddingBottom: "12px" }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: "16px", fontWeight: 600 }}>{it.nombre}</div>
+                              <div style={{ fontSize: "13px", color: "var(--muted)" }}>{formatoMoneda(it.precioVenta)} c/u</div>
+                              <div className="flex items-center gap-2" style={{ marginTop: "6px" }}>
+                                <button className="mm-icon-btn-lg" onClick={() => cambiarCantidadPedido(it.id, -1)}><Minus size={14} /></button>
+                                <span style={{ minWidth: "24px", textAlign: "center", fontSize: "17px", fontWeight: 600 }}>{it.cantidad}</span>
+                                <button className="mm-icon-btn-lg" onClick={() => cambiarCantidadPedido(it.id, 1)}><Plus size={14} /></button>
+                              </div>
+                            </div>
+                            <div style={{ textAlign: "right" }}>
+                              <div className="mm-display" style={{ fontWeight: 600, fontSize: "1.3rem" }}>{formatoMoneda(it.precioVenta * it.cantidad)}</div>
+                              <button className="mm-icon-btn" onClick={() => quitarDelPedido(it.id)} style={{ marginTop: "6px" }}><Trash2 size={12} /></button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="mm-ticket-footer">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", margin: "8px 0 18px" }}>
+                      <span className="mm-display" style={{ fontSize: "1.3rem" }}>TOTAL</span>
+                      <span className="mm-display" style={{ fontSize: "2.4rem", color: "var(--green-dark)" }}>{formatoMoneda(totalMesaActual)}</span>
+                    </div>
+                    {!pagoAbierto ? (
+                      <button
+                        className="mm-btn-primary"
+                        style={{ width: "100%", justifyContent: "center", fontSize: "16px", padding: "14px 18px" }}
+                        onClick={() => abrirPago(itemsMesaActual, { mesaId: mesaSeleccionada, pedidoId: pedidoActual?.id, nombreMesa: mesas.find((m) => m.id === mesaSeleccionada)?.nombre })}
+                        disabled={itemsMesaActual.length === 0}
+                      >
+                        <Check size={18} /> Cobrar mesa
+                      </button>
+                    ) : (
+                      renderBloquePago()
+                    )}
+                  </div>
+                  <div className="mm-zigzag" />
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1026,6 +1385,7 @@ export default function MinimarketApp() {
                         <div style={{ fontSize: "12px", color: "var(--muted)" }}>
                           {v.items.length} producto{v.items.length !== 1 ? "s" : ""} · Vendedor: {v.vendedor || "—"} ·{" "}
                           {v.metodoPago === "efectivo" ? "Efectivo" : "Transferencia"}
+                          {v.mesa && <> · {v.mesa}</>}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -1134,6 +1494,7 @@ export default function MinimarketApp() {
             Venta #{ventaParaImprimir.numero}<br />
             {new Date(ventaParaImprimir.fecha).toLocaleString("es-CO")}<br />
             Vendedor: {ventaParaImprimir.vendedor}
+            {ventaParaImprimir.mesa && <><br />{ventaParaImprimir.mesa}</>}
           </div>
           <div style={{ borderTop: "1px dashed #000", margin: "6px 0" }} />
           {ventaParaImprimir.items.map((it, i) => (
