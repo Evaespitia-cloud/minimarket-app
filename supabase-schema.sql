@@ -12,9 +12,13 @@ create table if not exists productos (
 
 create table if not exists ventas (
   id text primary key,
+  numero bigserial,
   fecha timestamptz not null default now(),
   vendedor text,
   total numeric not null default 0,
+  metodo_pago text default 'efectivo',
+  monto_recibido numeric,
+  cambio numeric,
   items jsonb not null default '[]'
 );
 
@@ -32,3 +36,25 @@ create table if not exists usuarios (
 -- directamente en la base de datos. Suficiente para un negocio pequeño
 -- con datos no críticos; si más adelante quieres reforzarlo, se puede
 -- migrar a Supabase Auth + políticas RLS.
+
+-- Como las tablas se crean por SQL directo (no desde el Table Editor),
+-- hay que otorgar permisos manualmente a los roles anon/authenticated,
+-- o las peticiones desde la app fallarán con error 401.
+grant usage on schema public to anon, authenticated;
+grant all on all tables in schema public to anon, authenticated;
+grant all on all sequences in schema public to anon, authenticated;
+alter default privileges in schema public grant all on tables to anon, authenticated;
+
+-- El sistema nuevo de llaves de Supabase (Publishable/Secret) exige
+-- Row Level Security activo con al menos una política, o bloquea
+-- TODAS las operaciones con el error "violates row-level security policy".
+-- Estas políticas permiten todo (mismo nivel de acceso simple que
+-- veníamos usando, ahora explícito):
+alter table productos enable row level security;
+alter table ventas enable row level security;
+alter table usuarios enable row level security;
+
+create policy "acceso total productos" on productos for all using (true) with check (true);
+create policy "acceso total ventas" on ventas for all using (true) with check (true);
+create policy "acceso total usuarios" on usuarios for all using (true) with check (true);
+

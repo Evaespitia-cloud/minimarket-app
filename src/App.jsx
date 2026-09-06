@@ -4,7 +4,7 @@ import { supabase } from "./supabaseClient";
 import {
   Search, Plus, Minus, Trash2, Store, Package, ShoppingCart,
   History, X, AlertTriangle, Pencil, Check, Loader2,
-  Users, UserPlus, LogOut, Download, RefreshCw
+  Users, UserPlus, LogOut, Download, RefreshCw, Printer, Banknote, Landmark
 } from "lucide-react";
 
 const UMBRAL_STOCK_BAJO = 5;
@@ -41,7 +41,13 @@ function mapProductoHaciaDB(p) {
 }
 
 function mapVentaDesdeDB(v) {
-  return { id: v.id, fecha: v.fecha, vendedor: v.vendedor, total: Number(v.total) || 0, items: v.items || [] };
+  return {
+    id: v.id, numero: v.numero, fecha: v.fecha, vendedor: v.vendedor, total: Number(v.total) || 0,
+    metodoPago: v.metodo_pago || "efectivo",
+    montoRecibido: v.monto_recibido != null ? Number(v.monto_recibido) : null,
+    cambio: v.cambio != null ? Number(v.cambio) : null,
+    items: v.items || [],
+  };
 }
 
 export default function MinimarketApp() {
@@ -72,6 +78,10 @@ export default function MinimarketApp() {
   const [ticket, setTicket] = useState([]);
   const [mensaje, setMensaje] = useState(null);
   const [expandido, setExpandido] = useState(null);
+  const [pagoAbierto, setPagoAbierto] = useState(false);
+  const [metodoPago, setMetodoPago] = useState("efectivo");
+  const [montoRecibido, setMontoRecibido] = useState("");
+  const [ventaParaImprimir, setVentaParaImprimir] = useState(null);
 
   const [formUsuarioAbierto, setFormUsuarioAbierto] = useState(false);
   const [editandoUsuario, setEditandoUsuario] = useState(null);
@@ -376,16 +386,37 @@ export default function MinimarketApp() {
   const totalTicket = ticket.reduce((acc, it) => acc + it.precioVenta * it.cantidad, 0);
   const totalUnidades = ticket.reduce((acc, it) => acc + it.cantidad, 0);
 
-  async function finalizarVenta() {
+  const montoRecibidoNum = Number(montoRecibido) || 0;
+  const cambioCalculado = montoRecibidoNum - totalTicket;
+
+  function abrirPago() {
     if (ticket.length === 0) return;
-    const venta = {
+    setMetodoPago("efectivo");
+    setMontoRecibido("");
+    setPagoAbierto(true);
+  }
+
+  function cancelarPago() {
+    setPagoAbierto(false);
+    setMontoRecibido("");
+  }
+
+  async function confirmarVenta() {
+    if (metodoPago === "efectivo" && montoRecibidoNum < totalTicket) {
+      setMensaje({ tipo: "error", texto: "El monto recibido es menor al total." });
+      return;
+    }
+    const ventaNueva = {
       id: nuevoId(),
       fecha: new Date().toISOString(),
       vendedor: sesion.nombre,
       total: totalTicket,
+      metodo_pago: metodoPago,
+      monto_recibido: metodoPago === "efectivo" ? montoRecibidoNum : null,
+      cambio: metodoPago === "efectivo" ? cambioCalculado : null,
       items: ticket.map((it) => ({ id: it.id, codigo: it.codigo, nombre: it.nombre, precioVenta: it.precioVenta, cantidad: it.cantidad })),
     };
-    const { error: eVenta } = await supabase.from("ventas").insert(venta);
+    const { data, error: eVenta } = await supabase.from("ventas").insert(ventaNueva).select().single();
     if (eVenta) {
       setMensaje({ tipo: "error", texto: "No se pudo registrar la venta. Intenta de nuevo." });
       return;
@@ -403,9 +434,18 @@ export default function MinimarketApp() {
         return item ? { ...p, stock: Math.max(0, p.stock - item.cantidad) } : p;
       })
     );
-    setVentas((prev) => [venta, ...prev]);
+    const ventaGuardada = mapVentaDesdeDB(data);
+    setVentas((prev) => [ventaGuardada, ...prev]);
+    setVentaParaImprimir(ventaGuardada);
     setTicket([]);
-    setMensaje({ tipo: "exito", texto: `Venta registrada por ${formatoMoneda(totalTicket)}.` });
+    setPagoAbierto(false);
+    setMontoRecibido("");
+    setMensaje({ tipo: "exito", texto: `Venta #${ventaGuardada.numero} registrada por ${formatoMoneda(totalTicket)}.` });
+  }
+
+  function imprimirVenta(venta) {
+    setVentaParaImprimir(venta);
+    setTimeout(() => window.print(), 150);
   }
 
   async function anularVenta(id) {
@@ -444,9 +484,11 @@ export default function MinimarketApp() {
     });
     const hojaVentas = ventas.flatMap((v) =>
       v.items.map((it) => ({
-        "Fecha": new Date(v.fecha).toLocaleString("es-CO"), "Vendedor": v.vendedor || "—",
+        "Venta #": v.numero, "Fecha": new Date(v.fecha).toLocaleString("es-CO"), "Vendedor": v.vendedor || "—",
         "Código": it.codigo, "Producto": it.nombre, "Cantidad": it.cantidad,
         "Precio unitario": it.precioVenta, "Subtotal": it.precioVenta * it.cantidad, "Total de la venta": v.total,
+        "Método de pago": v.metodoPago === "efectivo" ? "Efectivo" : "Transferencia",
+        "Recibido": v.montoRecibido ?? "", "Cambio": v.cambio ?? "",
       }))
     );
     const libro = XLSX.utils.book_new();
@@ -516,6 +558,24 @@ export default function MinimarketApp() {
       background-size: 12px 12px; background-position: bottom; background-repeat: repeat-x; }
     .mm-link { background: none; border: none; color: var(--muted); font-size: 12.5px; text-decoration: underline; cursor: pointer; padding: 0; }
     .mm-link:hover { color: var(--red); }
+    .mm-pago-metodo { display: flex; gap: 8px; margin-bottom: 14px; }
+    .mm-pago-metodo button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 12px; border: 1px solid var(--line); background: #fff; color: var(--ink); font-size: 14px;
+      font-weight: 600; cursor: pointer; font-family: 'Inter', sans-serif; }
+    .mm-pago-metodo button.active { background: var(--green); color: #fff; border-color: var(--green); }
+    .mm-cambio-box { background: var(--bg-page); border: 1px dashed var(--line); padding: 12px; margin-top: 10px;
+      display: flex; justify-content: space-between; align-items: baseline; }
+    .mm-recibo { position: absolute; left: -9999px; top: 0; width: 280px; font-family: 'Inter', sans-serif; color: #000; }
+    @media print {
+      body * { visibility: hidden; }
+      .mm-recibo, .mm-recibo * { visibility: visible; }
+      .mm-recibo { position: absolute; left: 0; top: 0; }
+    }
+    .mm-stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+    @media (max-width: 640px) { .mm-stats-row { grid-template-columns: 1fr; } }
+    .mm-stat-box { background: #fff; border: 1px solid var(--line); padding: 14px; text-align: center; }
+    .mm-stat-box .valor { font-family: 'Oswald', sans-serif; font-size: 1.6rem; color: var(--green-dark); }
+    .mm-stat-box .etiqueta { font-size: 12px; color: var(--muted); margin-top: 4px; }
     .mm-auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
     .mm-auth-card { background: #fff; border: 1px solid var(--line); padding: 28px; width: 100%; max-width: 340px; }
     .mm-auth-form { display: flex; flex-direction: column; gap: 12px; }
@@ -772,9 +832,15 @@ export default function MinimarketApp() {
                 <Search size={16} />
                 <input
                   type="text" autoFocus
-                  placeholder="Buscar producto por nombre o código..."
+                  placeholder="Buscar o escanear producto por nombre o código..."
                   value={busquedaVenta}
                   onChange={(e) => setBusquedaVenta(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && resultadosVenta.length === 1) {
+                      e.preventDefault();
+                      agregarAlTicket(resultadosVenta[0]);
+                    }
+                  }}
                 />
               </div>
               {busquedaVenta.trim() ? (
@@ -839,9 +905,73 @@ export default function MinimarketApp() {
                   <span className="mm-display" style={{ fontSize: "1.3rem" }}>TOTAL</span>
                   <span className="mm-display" style={{ fontSize: "2.4rem", color: "var(--green-dark)" }}>{formatoMoneda(totalTicket)}</span>
                 </div>
-                <button className="mm-btn-primary" style={{ width: "100%", justifyContent: "center", fontSize: "16px", padding: "14px 18px" }} onClick={finalizarVenta} disabled={ticket.length === 0}>
-                  <Check size={18} /> Cobrar venta
-                </button>
+
+                {!pagoAbierto ? (
+                  <button
+                    className="mm-btn-primary"
+                    style={{ width: "100%", justifyContent: "center", fontSize: "16px", padding: "14px 18px" }}
+                    onClick={abrirPago}
+                    disabled={ticket.length === 0}
+                  >
+                    <Check size={18} /> Cobrar venta
+                  </button>
+                ) : (
+                  <div>
+                    <div className="mm-pago-metodo">
+                      <button className={metodoPago === "efectivo" ? "active" : ""} onClick={() => setMetodoPago("efectivo")}>
+                        <Banknote size={16} /> Efectivo
+                      </button>
+                      <button className={metodoPago === "transferencia" ? "active" : ""} onClick={() => setMetodoPago("transferencia")}>
+                        <Landmark size={16} /> Transferencia
+                      </button>
+                    </div>
+
+                    {metodoPago === "efectivo" && (
+                      <div style={{ marginBottom: "6px" }}>
+                        <label style={{ fontSize: "12.5px", color: "#6b6448", fontWeight: 500, display: "block", marginBottom: "4px" }}>
+                          ¿Con cuánto paga?
+                        </label>
+                        <input
+                          type="number" min="0" autoFocus
+                          value={montoRecibido}
+                          onChange={(e) => setMontoRecibido(e.target.value)}
+                          placeholder="0"
+                          style={{ width: "100%", border: "1px solid var(--line)", padding: "12px", fontSize: "18px", fontFamily: "'Oswald', sans-serif" }}
+                        />
+                        <div className="mm-cambio-box">
+                          <span style={{ fontSize: "13px", color: "var(--muted)" }}>Cambio</span>
+                          <span className="mm-display" style={{ fontSize: "1.4rem", color: cambioCalculado < 0 ? "var(--red)" : "var(--green-dark)" }}>
+                            {formatoMoneda(Math.max(cambioCalculado, 0))}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex gap-2" style={{ marginTop: "12px" }}>
+                      <button
+                        className="mm-btn-primary"
+                        style={{ flex: 1, justifyContent: "center", fontSize: "15px", padding: "12px" }}
+                        onClick={confirmarVenta}
+                        disabled={metodoPago === "efectivo" && montoRecibidoNum < totalTicket}
+                      >
+                        <Check size={16} /> Confirmar venta
+                      </button>
+                      <button className="mm-btn-secondary" onClick={cancelarPago}>
+                        <X size={16} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {!pagoAbierto && ventaParaImprimir && ticket.length === 0 && (
+                  <button
+                    className="mm-btn-secondary"
+                    style={{ width: "100%", justifyContent: "center", marginTop: "10px" }}
+                    onClick={() => imprimirVenta(ventaParaImprimir)}
+                  >
+                    <Printer size={16} /> Imprimir última venta (#{ventaParaImprimir.numero})
+                  </button>
+                )}
               </div>
               <div className="mm-zigzag" />
             </div>
@@ -850,6 +980,29 @@ export default function MinimarketApp() {
 
         {vista === "historial" && (
           <div>
+            {(() => {
+              const hoyStr = new Date().toDateString();
+              const ventasHoy = ventas.filter((v) => new Date(v.fecha).toDateString() === hoyStr);
+              const totalHoy = ventasHoy.reduce((acc, v) => acc + v.total, 0);
+              const unidadesHoy = ventasHoy.reduce((acc, v) => acc + v.items.reduce((a, it) => a + it.cantidad, 0), 0);
+              return (
+                <div className="mm-stats-row">
+                  <div className="mm-stat-box">
+                    <div className="valor">{ventasHoy.length}</div>
+                    <div className="etiqueta">Ventas hoy</div>
+                  </div>
+                  <div className="mm-stat-box">
+                    <div className="valor">{formatoMoneda(totalHoy)}</div>
+                    <div className="etiqueta">Total vendido hoy</div>
+                  </div>
+                  <div className="mm-stat-box">
+                    <div className="valor">{unidadesHoy}</div>
+                    <div className="etiqueta">Unidades vendidas hoy</div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {ventas.length === 0 ? (
               <div style={{ textAlign: "center", color: "var(--muted)", padding: "40px 0" }}>Todavía no se ha registrado ninguna venta.</div>
             ) : (
@@ -862,15 +1015,21 @@ export default function MinimarketApp() {
                         onClick={() => setExpandido(expandido === v.id ? null : v.id)}
                         onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setExpandido(expandido === v.id ? null : v.id)}
                       >
-                        <div style={{ fontWeight: 600, fontSize: "14px" }}>{new Date(v.fecha).toLocaleString("es-CO")}</div>
+                        <div style={{ fontWeight: 600, fontSize: "14px" }}>
+                          Venta #{v.numero} · {new Date(v.fecha).toLocaleString("es-CO")}
+                        </div>
                         <div style={{ fontSize: "12px", color: "var(--muted)" }}>
-                          {v.items.length} producto{v.items.length !== 1 ? "s" : ""} · Vendedor: {v.vendedor || "—"}
+                          {v.items.length} producto{v.items.length !== 1 ? "s" : ""} · Vendedor: {v.vendedor || "—"} ·{" "}
+                          {v.metodoPago === "efectivo" ? "Efectivo" : "Transferencia"}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
                         <div className="mm-display" style={{ fontSize: "1.1rem", color: "var(--green-dark)", cursor: "pointer" }} onClick={() => setExpandido(expandido === v.id ? null : v.id)}>
                           {formatoMoneda(v.total)}
                         </div>
+                        <button className="mm-icon-btn" title="Imprimir" onClick={() => imprimirVenta(v)}>
+                          <Printer size={13} />
+                        </button>
                         {isAdmin && (
                           <button className="mm-icon-btn" title="Anular venta" onClick={() => anularVenta(v.id)}>
                             <Trash2 size={13} />
@@ -886,6 +1045,11 @@ export default function MinimarketApp() {
                             <span>{formatoMoneda(it.precioVenta * it.cantidad)}</span>
                           </div>
                         ))}
+                        {v.metodoPago === "efectivo" && v.montoRecibido != null && (
+                          <div style={{ marginTop: "6px", paddingTop: "6px", borderTop: "1px dashed var(--line)", fontSize: "13px", color: "var(--muted)" }}>
+                            Recibido: {formatoMoneda(v.montoRecibido)} · Cambio: {formatoMoneda(v.cambio)}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -957,6 +1121,42 @@ export default function MinimarketApp() {
           </div>
         )}
       </main>
+
+      {ventaParaImprimir && (
+        <div className="mm-recibo">
+          <div style={{ textAlign: "center", fontWeight: 700, fontSize: "16px" }}>MINIMARKET</div>
+          <div style={{ textAlign: "center", fontSize: "12px", marginBottom: "8px" }}>
+            Venta #{ventaParaImprimir.numero}<br />
+            {new Date(ventaParaImprimir.fecha).toLocaleString("es-CO")}<br />
+            Vendedor: {ventaParaImprimir.vendedor}
+          </div>
+          <div style={{ borderTop: "1px dashed #000", margin: "6px 0" }} />
+          {ventaParaImprimir.items.map((it, i) => (
+            <div key={i} style={{ fontSize: "12px", marginBottom: "3px" }}>
+              <div>{it.nombre}</div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span>{it.cantidad} x {formatoMoneda(it.precioVenta)}</span>
+                <span>{formatoMoneda(it.precioVenta * it.cantidad)}</span>
+              </div>
+            </div>
+          ))}
+          <div style={{ borderTop: "1px dashed #000", margin: "6px 0" }} />
+          <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: "15px" }}>
+            <span>TOTAL</span>
+            <span>{formatoMoneda(ventaParaImprimir.total)}</span>
+          </div>
+          <div style={{ fontSize: "12px", marginTop: "6px" }}>
+            Pago: {ventaParaImprimir.metodoPago === "efectivo" ? "Efectivo" : "Transferencia"}
+            {ventaParaImprimir.metodoPago === "efectivo" && ventaParaImprimir.montoRecibido != null && (
+              <>
+                <br />Recibido: {formatoMoneda(ventaParaImprimir.montoRecibido)}
+                <br />Cambio: {formatoMoneda(ventaParaImprimir.cambio)}
+              </>
+            )}
+          </div>
+          <div style={{ textAlign: "center", fontSize: "12px", marginTop: "10px" }}>¡Gracias por su compra!</div>
+        </div>
+      )}
     </div>
   );
 }

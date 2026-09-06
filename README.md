@@ -1,56 +1,64 @@
 # Minimarket
 
-App de facturación e inventario para minimarket: stock, precio de ingreso, precio de venta, búsqueda de productos y facturación con historial. Incluye un modo administrador con PIN para restringir quién puede editar el inventario y anular ventas.
+App de facturación e inventario para minimarket: stock, precio de ingreso, precio de venta, búsqueda/escaneo de productos, facturación con número de ticket, pago en efectivo (con cálculo de cambio) o transferencia, historial con totales del día, impresión de recibos y exportación a Excel. Los datos se guardan en una base de datos en la nube (Supabase), para que todos los dispositivos vean la misma información en tiempo real.
 
-## Cómo abrirlo en VS Code
+## Cómo correrlo en VS Code
 
-1. Descomprime esta carpeta y ábrela en VS Code (`Archivo > Abrir carpeta...`).
-2. Abre una terminal integrada (`Terminal > Nueva terminal`) y ejecuta:
-
+1. Abre esta carpeta en VS Code (`Archivo > Abrir carpeta...`).
+2. Terminal integrada (`Terminal > Nueva terminal`):
    ```
    npm install
-   ```
-
-   Esto instala React, Vite y los íconos (`lucide-react`) que usa la app. Solo se hace una vez.
-
-3. Para correr la app en modo desarrollo:
-
-   ```
    npm run dev
    ```
+3. Sigue las instrucciones de conexión a Supabase más abajo antes de usarla en serio.
 
-   Vite te mostrará un enlace como `http://localhost:5173` — ábrelo en tu navegador.
+## Conectar con Supabase
 
-4. Cuando quieras generar la versión final para publicar en un hosting (Vercel, Netlify, etc.):
+1. Crea un proyecto en [supabase.com](https://supabase.com).
+2. **SQL Editor → New query**: pega y ejecuta todo el contenido de `supabase-schema.sql` (crea las tablas, permisos y políticas necesarias).
+3. **Project Settings → API Keys** (pestaña "Publishable and secret API keys"): copia el **Project URL** y la **Publishable key**.
+4. Crea un archivo `.env` en la raíz del proyecto (puedes copiar `.env.example`) y pega ahí esos dos valores.
+5. Reinicia `npm run dev`.
 
-   ```
-   npm run build
-   ```
+### Si ya tenías el proyecto de Supabase de antes de esta versión
 
-   Esto genera una carpeta `dist/` lista para subir a cualquier servicio de hosting estático.
-
-## Importante: cómo se guardan los datos
-
-Esta versión guarda el inventario y las ventas en el `localStorage` del navegador, es decir: **los datos quedan guardados solo en el navegador/computador donde la uses**, no se comparten automáticamente entre distintos dispositivos o personas.
-
-- Si la vas a usar solo tú, desde un mismo computador, esto es suficiente.
-- Si necesitas que tú y un empleado vean y editen el mismo inventario desde equipos distintos (como en el punto de venta real), vas a necesitar una base de datos compartida (por ejemplo Supabase, Firebase, o un pequeño backend propio). Ese es el siguiente paso natural si decides llevar esto a producción — avísame cuando quieras montarlo y lo armamos juntos.
+Ejecuta también, una sola vez, el archivo `migracion-pagos.sql` en el SQL Editor — agrega las columnas de número de venta, método de pago y cambio a la tabla `ventas` que ya tenías creada.
 
 ## Usuarios y roles
 
-La primera vez que abras la app te va a pedir crear la cuenta de **administrador** (tu nombre, usuario y contraseña). Con esa cuenta entras a la pestaña "Usuarios" y creas ahí los usuarios de tus 3 o 4 vendedores (nombre, usuario, contraseña, rol "Vendedor").
+Primer uso: crea la cuenta de **administrador** (nombre, usuario, contraseña). Desde la pestaña "Usuarios" el administrador da de alta a los vendedores (nombre, usuario, contraseña, rol "Vendedor").
 
-- **Administrador**: ve y edita todo — inventario, usuarios, puede anular ventas y exportar a Excel.
-- **Vendedor**: puede buscar productos, ver precios y stock, y facturar. No puede editar el inventario ni gestionar usuarios.
+- **Administrador**: edita inventario, gestiona usuarios, anula ventas, exporta a Excel.
+- **Vendedor**: busca productos, ve precios/stock, factura. No edita inventario ni usuarios.
 
-Importante: las contraseñas se guardan en el navegador sin cifrado fuerte (no es un sistema con nivel de seguridad bancario). Para un negocio con empleados de confianza es suficiente, pero no la uses para guardar información realmente sensible.
+Nota de seguridad: las contraseñas se guardan sin cifrado fuerte y las tablas quedan con políticas abiertas (sin autenticación fina) — suficiente para un negocio con empleados de confianza, no para datos críticos.
+
+## Facturar
+
+- Busca por nombre o código. Si escribes/escaneas un código exacto y solo hay una coincidencia, presiona **Enter** para agregarlo directo al ticket — así funciona con una **lectora de código de barras USB** normal (la mayoría son "teclado emulado": escriben el código y presionan Enter solas, sin necesitar ningún driver ni configuración extra).
+- Al hacer clic manual en un resultado, te pregunta la cantidad a agregar.
+- Al cobrar, elige **Efectivo** (te pide cuánto paga el cliente y calcula el cambio) o **Transferencia**.
+- Cada venta queda con un número de ticket consecutivo (#1, #2, #3...).
+
+## Historial
+
+Muestra, arriba de todo, el total de ventas de hoy, el dinero total vendido hoy y las unidades vendidas hoy. Cada venta se puede expandir para ver el detalle, imprimir, o (solo administrador) anular — anular devuelve el stock al inventario.
+
+## Imprimir recibos
+
+El botón de impresora (en el ticket recién cobrado o en cualquier venta del historial) abre el diálogo de impresión normal del navegador con un recibo angosto tipo ticket. Funciona con cualquier impresora que tengas instalada en el sistema — incluidas la mayoría de impresoras térmicas de punto de venta (58mm/80mm), siempre que tengan su driver instalado en Windows como una impresora normal.
 
 ## Exportar a Excel
 
-Con la cuenta de administrador, el botón "Excel" en la esquina superior derecha descarga un archivo `.xlsx` con dos hojas: "Inventario" (todos los productos con stock y precios) y "Ventas" (el detalle de cada venta, con fecha y vendedor). Se descarga directo al navegador, no requiere conexión a internet ni backend.
+Con la cuenta de administrador, el botón "Excel" descarga un `.xlsx` con dos hojas: "Inventario" y "Ventas" (incluye número de venta, vendedor, método de pago, recibido y cambio).
 
-Después de agregar esta función necesitas correr una vez más:
-```
-npm install
-```
-para instalar la librería `xlsx` que usa la exportación.
+## Publicarla (Netlify)
+
+1. Sube el proyecto a GitHub (`git add .`, `git commit`, `git push`).
+2. En Netlify: importa el repositorio, build command `npm run build`, publish directory `dist`.
+3. Antes de desplegar, agrega las variables de entorno `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY` (los mismos valores de tu `.env`).
+4. Cada vez que hagas `git push`, Netlify reconstruye el sitio publicado automáticamente.
+
+## Importar productos desde Excel
+
+Si tienes tu inventario en un Excel con columnas Código, Producto, Categoría, Stock, Precio de ingreso, Precio de venta, se puede generar un script SQL de importación masiva — pídeselo a Claude adjuntando el archivo.
