@@ -742,7 +742,12 @@ export default function MinimarketApp() {
               <form onSubmit={guardarForm} className="mm-panel" style={{ marginBottom: "16px" }}>
                 <div className="mm-form-grid">
                   <label>Código
-                    <input value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} placeholder="Ej. 001" />
+                    <input
+                      value={form.codigo}
+                      onChange={(e) => setForm({ ...form, codigo: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
+                      placeholder="Escanea o escribe el código"
+                    />
                   </label>
                   <label>Nombre
                     <input value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} required placeholder="Ej. Arroz Diana 500g" />
