@@ -779,8 +779,8 @@ export default function MinimarketApp() {
     .mm-resultado:disabled { cursor: not-allowed; opacity: 0.5; }
     .mm-facturar-grid { display: grid; grid-template-columns: 1fr 1.15fr; gap: 20px; align-items: start; }
     @media (max-width: 720px) { .mm-facturar-grid { grid-template-columns: 1fr; } }
-    .mm-mesas-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
-    .mm-mesa-card { background: #fff; border: 2px solid var(--line); padding: 14px; }
+    .mm-mesas-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 18px; }
+    .mm-mesa-card { background: #fff; border: 3px solid var(--line); padding: 22px; }
     .mm-ticket { background: var(--paper); border: 1px solid var(--line); position: relative; }
     .mm-ticket-body { padding: 20px 20px 6px; }
     .mm-ticket-footer { padding: 0 20px 20px; }
@@ -798,9 +798,11 @@ export default function MinimarketApp() {
       display: flex; justify-content: space-between; align-items: baseline; }
     .mm-recibo { position: absolute; left: -9999px; top: 0; width: 280px; font-family: 'Inter', sans-serif; color: #000; }
     @media print {
-      body * { visibility: hidden; }
-      .mm-recibo, .mm-recibo * { visibility: visible; }
-      .mm-recibo { position: absolute; left: 0; top: 0; }
+      @page { size: 80mm auto; margin: 0; }
+      html, body { width: 80mm; margin: 0 !important; padding: 0 !important; }
+      .mm-root { min-height: 0 !important; height: auto !important; }
+      .mm-root > *:not(.mm-recibo) { display: none !important; }
+      .mm-recibo { position: static !important; left: auto !important; width: 80mm !important; }
     }
     .mm-stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
     @media (max-width: 640px) { .mm-stats-row { grid-template-columns: 1fr; } }
@@ -1227,18 +1229,18 @@ export default function MinimarketApp() {
                             onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && abrirMesa(m.id)}
                             style={{ cursor: "pointer" }}
                           >
-                            <div style={{ fontWeight: 600, fontSize: "15px" }}>{m.nombre}</div>
-                            <div style={{ fontSize: "12px", color: ocupada ? "var(--red)" : "var(--green)", fontWeight: 600, marginTop: "4px" }}>
+                            <div className="mm-display" style={{ fontWeight: 600, fontSize: "1.3rem" }}>{m.nombre}</div>
+                            <div style={{ fontSize: "14px", color: ocupada ? "var(--red)" : "var(--green)", fontWeight: 600, marginTop: "6px" }}>
                               {ocupada ? "Ocupada" : "Libre"}
                             </div>
                             {ocupada && (
-                              <div className="mm-display" style={{ fontSize: "1.1rem", marginTop: "6px" }}>{formatoMoneda(total)}</div>
+                              <div className="mm-display" style={{ fontSize: "1.6rem", marginTop: "10px", color: "var(--green-dark)" }}>{formatoMoneda(total)}</div>
                             )}
                           </div>
                           {isAdmin && (
-                            <div className="flex gap-1" style={{ marginTop: "8px" }}>
-                              <button className="mm-icon-btn" onClick={() => abrirEdicionMesa(m)}><Pencil size={12} /></button>
-                              <button className="mm-icon-btn" onClick={() => eliminarMesa(m.id)}><Trash2 size={12} /></button>
+                            <div className="flex gap-1" style={{ marginTop: "14px" }}>
+                              <button className="mm-icon-btn-lg" onClick={() => abrirEdicionMesa(m)}><Pencil size={14} /></button>
+                              <button className="mm-icon-btn-lg" onClick={() => eliminarMesa(m.id)}><Trash2 size={14} /></button>
                             </div>
                           )}
                         </div>
